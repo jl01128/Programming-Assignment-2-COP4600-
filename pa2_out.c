@@ -1,9 +1,9 @@
 /**
- * File:	outputDevice.c
+ * File:	lkmasg1.c
  * Adapted for Linux 5.15 by: John Aedo
  * Class:	COP4600-SP23
  */
-#include <linux/mutex.h>	         /// Required for the mutex functionality
+
 #include <linux/init.h> 
 #include <linux/module.h>	  // Core header for modules.
 #include <linux/device.h>	  // Supports driver model.
@@ -16,7 +16,7 @@
 
 MODULE_LICENSE("GPL");						 ///< The license type -- this affects available functionality
 MODULE_AUTHOR("John Aedo");					 ///< The author -- visible when you use modinfo
-MODULE_DESCRIPTION("output device Kernel Module"); ///< The description -- see modinfo
+MODULE_DESCRIPTION("lkmasg1 Kernel Module"); ///< The description -- see modinfo
 MODULE_VERSION("0.1");						 ///< A version number to inform users
 
 /**
@@ -38,7 +38,6 @@ static struct device *lkmasg1Device = NULL; ///< The device-driver device struct
 static int open(struct inode *, struct file *);
 static int close(struct inode *, struct file *);
 static ssize_t read(struct file *, char *, size_t, loff_t *);
-static ssize_t write(struct file *, const char *, size_t, loff_t *);
 
 /**
  * File operations structure and the functions it points to.
@@ -151,59 +150,4 @@ static ssize_t read(struct file *file, char __user *user_buffer,
     return bytes_read;
 }
 
-/*
- * Writes to the device
- */
-static ssize_t write(struct file *file, const char __user *user_buffer,
-                          size_t size, loff_t *offset)
-{
-    int bytes_to_write;
-    int bytes_written = 0;
 
-    if (size == 0) {
-        return 0;
-    }
-
-    bytes_to_write = min_t(int, size, BUF_SIZE - write_pos);
-    if (bytes_to_write == 0) {
-        printk(KERN_INFO "char device write buffer full\n");
-        return -ENOSPC;
-    }
-
-    bytes_written = bytes_to_write - copy_from_user(&buffer[write_pos], user_buffer, bytes_to_write);
-
-    write_pos += bytes_written;
-    buffer_size += bytes_written;
-
-    printk(KERN_INFO "char device wrote %d bytes\n", bytes_written);
-
-    return bytes_written;
-}
-
-static DEFINE_MUTEX(ebbchar_mutex);  /// A macro that is used to declare a new mutex that is visible in this file
-                                     /// results in a semaphore variable ebbchar_mutex with value 1 (unlocked)
-                                     /// DEFINE_MUTEX_LOCKED() results in a variable with value 0 (locked)
-                                     
-static int __init ebbchar_init(void){
- 
-   mutex_init(&ebbchar_mutex);       /// Initialize the mutex lock dynamically at runtime
-}
-
-static int dev_open(struct inode *inodep, struct file *filep){
-   if(!mutex_trylock(&ebbchar_mutex)){    /// Try to acquire the mutex (i.e., put the lock on/down)
-                                          /// returns 1 if successful and 0 if there is contention
-      printk(KERN_ALERT "EBBChar: Device in use by another process");
-      return -EBUSY;
-   }
-  
-}
-
-static int dev_release(struct inode *inodep, struct file *filep){
-   mutex_unlock(&ebbchar_mutex);          /// Releases the mutex (i.e., the lock goes up)
-  
-}
-
-static void __exit ebbchar_exit(void){
-   mutex_destroy(&ebbchar_mutex);        /// destroy the dynamically-allocated mutex
-   
-}
