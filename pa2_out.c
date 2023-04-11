@@ -1,153 +1,85 @@
-/**
- * File:	lkmasg1.c
- * Adapted for Linux 5.15 by: John Aedo
- * Class:	COP4600-SP23
- */
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/cdev.h>
+#include <linux/uaccess.h>
+#include <linux/mutex.h>
 
-#include <linux/init.h> 
-#include <linux/module.h>	  // Core header for modules.
-#include <linux/device.h>	  // Supports driver model.
-#include <linux/kernel.h>	  // Kernel header for convenient functions.
-#include <linux/fs.h>		  // File-system support.
-#include <linux/uaccess.h>	  // User access copy function support.
-#define DEVICE_NAME "lkmasg1" // Device name.
-#define CLASS_NAME "char"	  ///< The device class -- this is a character device driver
-#define BUF_SIZE 1024
+char *buffer;
+int *current_size;
+struct mutex *my_mutex;
 
-MODULE_LICENSE("GPL");						 ///< The license type -- this affects available functionality
-MODULE_AUTHOR("John Aedo");					 ///< The author -- visible when you use modinfo
-MODULE_DESCRIPTION("lkmasg1 Kernel Module"); ///< The description -- see modinfo
-MODULE_VERSION("0.1");						 ///< A version number to inform users
+static dev_t my_dev;
+static struct cdev my_cdev;
 
-/**
- * Important variables that store data and keep track of relevant information.
- */
-static int    major_number;                  ///< Stores the device number -- determined automatically
-
-static char buffer[BUF_SIZE];
-static int buffer_size = 0;
-static int read_pos = 0;
-static int write_pos = 0;        
-
-static struct class *lkmasg1Class = NULL;	///< The device-driver class struct pointer
-static struct device *lkmasg1Device = NULL; ///< The device-driver device struct pointer
-
-/**
- * Prototype functions for file operations.
- */
-static int open(struct inode *, struct file *);
-static int close(struct inode *, struct file *);
-static ssize_t read(struct file *, char *, size_t, loff_t *);
-
-/**
- * File operations structure and the functions it points to.
- */
-static struct file_operations fops =
-	{
-		.owner = THIS_MODULE,
-		.open = open,
-		.release = close,
-		.read = read,
-		.write = write,
-};
-
-/**
- * Initializes module at installation
- */
-int init_module(void)
-{
-	printk(KERN_INFO "lkmasg1: installing module.\n");
-
-	// Allocate a major number for the device.
-	major_number = register_chrdev(0, DEVICE_NAME, &fops);
-	if (major_number < 0)
-	{
-		printk(KERN_ALERT "lkmasg1 could not register number.\n");
-		return major_number;
-	}
-	printk(KERN_INFO "lkmasg1: registered correctly with major number %d\n", major_number);
-
-	// Register the device class
-	lkmasg1Class = class_create(THIS_MODULE, CLASS_NAME);
-	if (IS_ERR(lkmasg1Class))
-	{ // Check for error and clean up if there is
-		unregister_chrdev(major_number, DEVICE_NAME);
-		printk(KERN_ALERT "Failed to register device class\n");
-		return PTR_ERR(lkmasg1Class); // Correct way to return an error on a pointer
-	}
-	printk(KERN_INFO "lkmasg1: device class registered correctly\n");
-
-	// Register the device driver
-	lkmasg1Device = device_create(lkmasg1Class, NULL, MKDEV(major_number, 0), NULL, DEVICE_NAME);
-	if (IS_ERR(lkmasg1Device))
-	{								 // Clean up if there is an error
-		class_destroy(lkmasg1Class); // Repeated code but the alternative is goto statements
-		unregister_chrdev(major_number, DEVICE_NAME);
-		printk(KERN_ALERT "Failed to create the device\n");
-		return PTR_ERR(lkmasg1Device);
-	}
-	printk(KERN_INFO "lkmasg1: device class created correctly\n"); // Made it! device was initialized
-
-	return 0;
-}
-
-/*
- * Removes module, sends appropriate message to kernel
- */
-void cleanup_module(void)
-{
-	printk(KERN_INFO "lkmasg1: removing module.\n");
-	device_destroy(lkmasg1Class, MKDEV(major_number, 0)); // remove the device
-	class_unregister(lkmasg1Class);						  // unregister the device class
-	class_destroy(lkmasg1Class);						  // remove the device class
-	unregister_chrdev(major_number, DEVICE_NAME);		  // unregister the major number
-	printk(KERN_INFO "lkmasg1: Goodbye from the LKM!\n");
-	unregister_chrdev(major_number, DEVICE_NAME);
-	return;
-}
-
-/*
- * Opens device module, sends appropriate message to kernel
- */
-static int open(struct inode *inodep, struct file *filep)
-{
-	printk(KERN_INFO "lkmasg1: device opened.\n");
-	return 0;
-}
-
-/*
- * Closes device module, sends appropriate message to kernel
- */
-static int close(struct inode *inodep, struct file *filep)
-{
-	printk(KERN_INFO "lkmasg1: device closed.\n");
-	return 0;
-}
-
-/*
- * Reads from device, displays in userspace, and deletes the read data
- */
-static ssize_t read(struct file *file, char __user *user_buffer,
-                         size_t size, loff_t *offset)
-{
+static ssize_t pa2_out_read(struct file *file, char __user *user_buffer, size_t count, loff_t *ppos) {
     int bytes_to_read;
-    int bytes_read = 0;
+    int bytes_read;
 
-    if (read_pos == write_pos) {
-        return 0;  // nothing to read
+    if (mutex_lock_interruptible(my_mutex)) {
+        return -ERESTARTSYS;
     }
 
-    bytes_to_read = min_t(int, size, write_pos - read_pos);
-    bytes_read = bytes_to_read - copy_to_user(user_buffer, &buffer[read_pos], bytes_to_read);
+    bytes_to_read = min(count, (size_t)*current_size);
 
-    read_pos += bytes_read;
-    if (read_pos == write_pos) {
-        read_pos = write_pos = 0;  // reset buffer
+    if (copy_to_user(user_buffer, buffer, bytes_to_read)) {
+        mutex_unlock(my_mutex);
+        return -EFAULT;
     }
 
-    printk(KERN_INFO "char device read %d bytes\n", bytes_read);
+    bytes_read = bytes_to_read;
+    memmove(buffer, &buffer[bytes_read], *current_size - bytes_read);
+    *current_size -= bytes_read;
 
+    printk(KERN_INFO "pa2_out: Read %d bytes from the buffer\n", bytes_read);
+
+    mutex_unlock(my_mutex);
     return bytes_read;
 }
 
+static struct file_operations pa2_out_fops = {
+    .owner = THIS_MODULE,
+    .read = pa2_out_read,
+};
+
+static int __init pa2_out_init(void) {
+    int err;
+
+    // Allocate major number dynamically
+    err = alloc_chrdev_region(&my_dev, 0, 1, "pa2_out");
+    if (err) {
+        printk(KERN_ALERT "pa2_out: Failed to allocate major number\n");
+        return err;
+    }
+
+    // Initialize the cdev structure
+    cdev_init(&my_cdev, &pa2_out_fops);
+    my_cdev.owner = THIS_MODULE;
+
+    // Add the cdev to the kernel
+    err = cdev_add(&my_cdev, my_dev, 1);
+    if (err) {
+        printk(KERN_ALERT "pa2_out: Failed to add cdev\n");
+        unregister_chrdev_region(my_dev, 1);
+        return err;
+    }
+
+    printk(KERN_INFO "pa2_out: Module initialized successfully %d\n", MAJOR(my_dev));
+    return 0;
+}
+
+static void __exit pa2_out_exit(void) {
+    cdev_del(&my_cdev);
+    unregister_chrdev_region(my_dev, 1);
+    printk(KERN_INFO "pa2_out: Module unloaded successfully\n");
+}
+
+module_init(pa2_out_init);
+module_exit(pa2_out_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Your Name");
+MODULE_DESCRIPTION("PA2 Output Module");
+MODULE_VERSION("1.0");
 
