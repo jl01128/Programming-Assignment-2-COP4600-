@@ -1,9 +1,10 @@
-obj-m += lkmasg1.o
+obj-m += pa2_in.o
+obj-m += pa2_out.o
+
+KDIR := /lib/modules/$(shell uname -r)/build
 
 all:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
-	gcc test.c -o test
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
-	rm test
+	$(MAKE) -C $(KDIR) M=$(PWD) clean

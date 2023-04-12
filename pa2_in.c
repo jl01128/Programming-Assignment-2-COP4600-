@@ -1,155 +1,113 @@
-/**
- * File:	lkmasg1.c
- * Adapted for Linux 5.15 by: John Aedo
- * Class:	COP4600-SP23
- */
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/uaccess.h>
+#include <linux/device.h>
+#include <linux/cdev.h>
+#include <linux/export.h>
 
-#include <linux/init.h> 
-#include <linux/module.h>	  // Core header for modules.
-#include <linux/device.h>	  // Supports driver model.
-#include <linux/kernel.h>	  // Kernel header for convenient functions.
-#include <linux/fs.h>		  // File-system support.
-#include <linux/uaccess.h>	  // User access copy function support.
-#define DEVICE_NAME "lkmasg1" // Device name.
-#define CLASS_NAME "char"	  ///< The device class -- this is a character device driver
-#define BUF_SIZE 1024
+#include "shared_data.h"
 
-MODULE_LICENSE("GPL");						 ///< The license type -- this affects available functionality
-MODULE_AUTHOR("John Aedo");					 ///< The author -- visible when you use modinfo
-MODULE_DESCRIPTION("lkmasg1 Kernel Module"); ///< The description -- see modinfo
-MODULE_VERSION("0.1");						 ///< A version number to inform users
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Your Name");
+MODULE_DESCRIPTION("PA2 input kernel module");
+MODULE_VERSION("0.1");
 
-/**
- * Important variables that store data and keep track of relevant information.
- */
-static int    major_number;                  ///< Stores the device number -- determined automatically
+struct shared_data shared_memory;
+EXPORT_SYMBOL(shared_memory);
 
-static char buffer[BUF_SIZE];
-static int buffer_size = 0;
-static int read_pos = 0;
-static int write_pos = 0;        
+static int pa2_in_major_number;
+static struct class *pa2_in_class = NULL;
+static struct cdev pa2_in_cdev;
 
-static struct class *lkmasg1Class = NULL;	///< The device-driver class struct pointer
-static struct device *lkmasg1Device = NULL; ///< The device-driver device struct pointer
+ssize_t pa2_in_write(struct file *file, const char __user *buf, size_t len, loff_t *ppos) {
+    ssize_t bytes_written = 0;
 
-/**
- * Prototype functions for file operations.
- */
-static int open(struct inode *, struct file *);
-static int close(struct inode *, struct file *);
-static ssize_t write(struct file *, const char *, size_t, loff_t *);
+    printk(KERN_INFO "pa2_in: Waiting on the lock\n");
+    mutex_lock(&shared_memory.buffer_mutex);
+    printk(KERN_INFO "pa2_in: Acquiring the lock\n");
 
-/**
- * File operations structure and the functions it points to.
- */
-static struct file_operations fops =
-	{
-		.owner = THIS_MODULE,
-		.open = open,
-		.release = close,
-		.read = read,
-		.write = write,
-};
+    printk(KERN_INFO "pa2_in: In the Critical Section\n");
 
-/**
- * Initializes module at installation
- */
-int init_module(void)
-{
-	printk(KERN_INFO "lkmasg1: installing module.\n");
+    // Write data to the shared buffer
+    for (bytes_written = 0; bytes_written < len; ++bytes_written) {
+        if (shared_memory.write_pos == BUFFER_SIZE) {
+            printk(KERN_INFO "pa2_in: Buffer is full\n");
+            break;
+        }
 
-	// Allocate a major number for the device.
-	major_number = register_chrdev(0, DEVICE_NAME, &fops);
-	if (major_number < 0)
-	{
-		printk(KERN_ALERT "lkmasg1 could not register number.\n");
-		return major_number;
-	}
-	printk(KERN_INFO "lkmasg1: registered correctly with major number %d\n", major_number);
-
-	// Register the device class
-	lkmasg1Class = class_create(THIS_MODULE, CLASS_NAME);
-	if (IS_ERR(lkmasg1Class))
-	{ // Check for error and clean up if there is
-		unregister_chrdev(major_number, DEVICE_NAME);
-		printk(KERN_ALERT "Failed to register device class\n");
-		return PTR_ERR(lkmasg1Class); // Correct way to return an error on a pointer
-	}
-	printk(KERN_INFO "lkmasg1: device class registered correctly\n");
-
-	// Register the device driver
-	lkmasg1Device = device_create(lkmasg1Class, NULL, MKDEV(major_number, 0), NULL, DEVICE_NAME);
-	if (IS_ERR(lkmasg1Device))
-	{								 // Clean up if there is an error
-		class_destroy(lkmasg1Class); // Repeated code but the alternative is goto statements
-		unregister_chrdev(major_number, DEVICE_NAME);
-		printk(KERN_ALERT "Failed to create the device\n");
-		return PTR_ERR(lkmasg1Device);
-	}
-	printk(KERN_INFO "lkmasg1: device class created correctly\n"); // Made it! device was initialized
-
-	return 0;
-}
-
-/*
- * Removes module, sends appropriate message to kernel
- */
-void cleanup_module(void)
-{
-	printk(KERN_INFO "lkmasg1: removing module.\n");
-	device_destroy(lkmasg1Class, MKDEV(major_number, 0)); // remove the device
-	class_unregister(lkmasg1Class);						  // unregister the device class
-	class_destroy(lkmasg1Class);						  // remove the device class
-	unregister_chrdev(major_number, DEVICE_NAME);		  // unregister the major number
-	printk(KERN_INFO "lkmasg1: Goodbye from the LKM!\n");
-	unregister_chrdev(major_number, DEVICE_NAME);
-	return;
-}
-
-/*
- * Opens device module, sends appropriate message to kernel
- */
-static int open(struct inode *inodep, struct file *filep)
-{
-	printk(KERN_INFO "lkmasg1: device opened.\n");
-	return 0;
-}
-
-/*
- * Closes device module, sends appropriate message to kernel
- */
-static int close(struct inode *inodep, struct file *filep)
-{
-	printk(KERN_INFO "lkmasg1: device closed.\n");
-	return 0;
-}
-
-/*
- * Writes to the device
- */
-static ssize_t write(struct file *file, const char __user *user_buffer,
-                          size_t size, loff_t *offset)
-{
-    int bytes_to_write;
-    int bytes_written = 0;
-
-    if (size == 0) {
-        return 0;
+        if (copy_from_user(&shared_memory.buffer[shared_memory.write_pos], &buf[bytes_written], 1)) {
+            printk(KERN_ERR "pa2_in: Failed to write\n");
+            break;
+        }
+        shared_memory.write_pos = (shared_memory.write_pos + 1) % BUFFER_SIZE;
     }
 
-    bytes_to_write = min_t(int, size, BUF_SIZE - write_pos);
-    if (bytes_to_write == 0) {
-        printk(KERN_INFO "char device write buffer full\n");
-        return -ENOSPC;
+    if (bytes_written < len) {
+        printk(KERN_INFO "pa2_in: Not enough space left in the buffer, dropping the rest\n");
     }
 
-    bytes_written = bytes_to_write - copy_from_user(&buffer[write_pos], user_buffer, bytes_to_write);
+    printk(KERN_INFO "pa2_in: Writing %zu bytes\n", bytes_written);
 
-    write_pos += bytes_written;
-    buffer_size += bytes_written;
-
-    printk(KERN_INFO "char device wrote %d bytes\n", bytes_written);
-
+    printk(KERN_INFO "pa2_in: Releasing the lock\n");
+    mutex_unlock(&shared_memory.buffer_mutex);
     return bytes_written;
 }
+
+static struct file_operations pa2_in_fops = {
+    .write = pa2_in_write,
+};
+
+static int __init pa2_in_init(void) {
+    printk(KERN_INFO "pa2_in: Initializing the pa2_in module\n");
+
+    shared_memory.read_pos = 0;
+    shared_memory.write_pos = 0;
+    mutex_init(&shared_memory.buffer_mutex);
+
+    pa2_in_major_number = register_chrdev(0, "pa2_in", &pa2_in_fops);
+    if (pa2_in_major_number < 0) {
+        printk(KERN_ERR "pa2_in: Failed to register a major number\n");
+        return pa2_in_major_number;
+    }
+
+    pa2_in_class = class_create(THIS_MODULE, "pa2_in_class");
+    if (IS_ERR(pa2_in_class)) {
+        unregister_chrdev(pa2_in_major_number, "pa2_in");
+        printk(KERN_ERR "pa2_in: Failed to register device class\n");
+        return PTR_ERR(pa2_in_class);
+    }
+
+    device_create(pa2_in_class, NULL, MKDEV(pa2_in_major_number, 0), NULL, "pa2_in");
+
+    cdev_init(&pa2_in_cdev, &pa2_in_fops);
+    pa2_in_cdev.owner = THIS_MODULE;
+
+    if (cdev_add(&pa2_in_cdev, MKDEV(pa2_in_major_number, 0), 1) < 0) {
+        printk(KERN_ERR "pa2_in: Failed to add character device\n");
+        device_destroy(pa2_in_class, MKDEV(pa2_in_major_number, 0));
+        class_unregister(pa2_in_class);
+        class_destroy(pa2_in_class);
+        unregister_chrdev(pa2_in_major_number, "pa2_in");
+        return -1;
+    }
+
+    return 0;
+}
+
+static void __exit pa2_in_exit(void) {
+    printk(KERN_INFO "pa2_in: Exiting the pa2_in module\n");
+
+    cdev_del(&pa2_in_cdev);
+    device_destroy(pa2_in_class, MKDEV(pa2_in_major_number, 0));
+    class_unregister(pa2_in_class);
+    class_destroy(pa2_in_class);
+    unregister_chrdev(pa2_in_major_number, "pa2_in");
+    mutex_destroy(&shared_memory.buffer_mutex);
+}
+
+module_init(pa2_in_init);
+module_exit(pa2_in_exit);
+
 
